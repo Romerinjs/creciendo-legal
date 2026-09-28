@@ -12,6 +12,11 @@ export const metadata: Metadata = {
   title: "Creciendo — Todo el crecimiento y salud de tus hijos en un solo lugar",
   description:
     "Organiza vacunas, peso, talla, documentos, controles médicos y recordatorios de tus hijos. Diseñado para padres y cuidadores con total privacidad y apoyo de IA educativa.",
+  icons: {
+    icon: "/images/creciendo-logo.png",
+    shortcut: "/images/creciendo-logo.png",
+    apple: "/images/creciendo-logo.png",
+  },
 };
 
 import { ScrollRevealProvider } from "./components/ScrollRevealProvider";
