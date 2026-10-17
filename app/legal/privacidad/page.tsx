@@ -926,7 +926,7 @@ export default function PrivacidadPage() {
                 Política de Privacidad
               </Link>
               <Link href="/legal/terminos">Términos del Servicio</Link>
-              <Link href="/legal/privacidad#sec-10">Eliminar cuenta</Link>
+              <Link href="/eliminar-cuenta">Eliminar cuenta</Link>
             </div>
 
             <div className="link-col">

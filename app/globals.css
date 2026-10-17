@@ -1298,6 +1298,119 @@ img {
   color: #53625C;
 }
 
+/* Account deletion page */
+.account-delete-hero {
+  min-height: 68vh;
+  padding: 72px 0 96px;
+}
+
+.account-delete-hero .hero-title {
+  font-size: 2.75rem;
+  margin-bottom: 12px;
+}
+
+.account-delete-hero .hero-subtitle {
+  margin-bottom: 32px;
+}
+
+.account-delete-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+  padding: 26px;
+  background: var(--brand-accent-light);
+  border: 1px solid #F1D9CF;
+  border-radius: var(--radius-lg);
+}
+
+.account-delete-icon {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  color: #9A4D35;
+  background: #F8E4DC;
+}
+
+.account-delete-card h2,
+.account-delete-detail h3 {
+  color: var(--text-main);
+  font-size: 1.05rem;
+  margin-bottom: 6px;
+}
+
+.account-delete-card p,
+.account-delete-detail p {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  line-height: 1.65;
+}
+
+.account-delete-details {
+  display: grid;
+  gap: 14px;
+  margin-top: 20px;
+}
+
+.account-delete-detail {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 20px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+}
+
+.account-delete-detail .essential-icon {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.account-delete-detail a {
+  color: var(--brand-primary);
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.account-delete-action {
+  margin-top: 28px;
+  padding: 24px;
+  text-align: center;
+  background: var(--bg-alt);
+  border-radius: var(--radius-lg);
+}
+
+.btn-danger,
+.btn-danger:disabled {
+  color: #fff;
+  background: #A94438;
+  opacity: 0.72;
+  cursor: not-allowed;
+}
+
+.account-delete-action p {
+  margin-top: 12px;
+  color: var(--text-light);
+  font-size: 0.8rem;
+}
+
+.account-delete-back {
+  display: flex;
+  justify-content: center;
+  margin-top: 28px;
+}
+
+@media (max-width: 600px) {
+  .account-delete-hero { padding: 48px 0 64px; }
+  .account-delete-hero .hero-title { font-size: 2.2rem; }
+  .account-delete-card { padding: 20px; }
+  .account-delete-detail { padding: 16px; }
+}
+
 /* --------------------------------------------------------------------------
    Responsive Breakpoints
    -------------------------------------------------------------------------- */
@@ -2006,5 +2119,4 @@ img {
     transform: translateY(0);
   }
 }
-
 
