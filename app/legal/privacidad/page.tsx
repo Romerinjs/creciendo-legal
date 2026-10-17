@@ -805,17 +805,10 @@ export default function PrivacidadPage() {
                   <p>
                     <strong>Correo de Privacidad:</strong>{" "}
                     <a
-                      href="mailto:info@creciendo.com.co"
+                      href="mailto:estebanp192001@gmail.com"
                       style={{ color: "var(--brand-primary)", fontWeight: 700 }}
                     >
-                      info@creciendo.com.co
-                    </a>{" "}
-                    o{" "}
-                    <a
-                      href="mailto:soporte@creciendo.app"
-                      style={{ color: "var(--brand-primary)", fontWeight: 700 }}
-                    >
-                      soporte@creciendo.app
+                      estebanp192001@gmail.com
                     </a>
                   </p>
                   <p>
@@ -931,7 +924,8 @@ export default function PrivacidadPage() {
 
             <div className="link-col">
               <h5>Contacto y Emergencia</h5>
-              <a href="mailto:soporte@creciendo.app">soporte@creciendo.app</a>
+              <a href="mailto:estebanp192001@gmail.com">estebanp192001@gmail.com</a>
+              <a href="tel:+573168858161">+57 316 885 8161</a>
               <span className="footer-emergency-box">
                 <PhoneCall size={16} /> Emergencias: Llama al 123
               </span>

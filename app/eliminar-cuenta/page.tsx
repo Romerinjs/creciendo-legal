@@ -113,7 +113,8 @@ export default function EliminarCuentaPage() {
             </div>
             <div className="link-col">
               <h5>Contacto</h5>
-              <a href="mailto:soporte@creciendo.app">soporte@creciendo.app</a>
+              <a href="mailto:estebanp192001@gmail.com">estebanp192001@gmail.com</a>
+              <a href="tel:+573168858161">+57 316 885 8161</a>
             </div>
           </div>
         </div>

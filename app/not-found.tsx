@@ -67,9 +67,9 @@ export default function NotFound() {
               <Shield size={18} color="var(--brand-primary)" />
               <span>Política de Privacidad</span>
             </Link>
-            <a href="mailto:soporte@creciendo.app" className="trust-item" style={{ color: "var(--text-muted)" }}>
+            <a href="mailto:estebanp192001@gmail.com" className="trust-item" style={{ color: "var(--text-muted)" }}>
               <PhoneCall size={18} color="var(--brand-primary)" />
-              <span>soporte@creciendo.app</span>
+              <span>estebanp192001@gmail.com</span>
             </a>
           </div>
         </div>
@@ -111,7 +111,8 @@ export default function NotFound() {
 
             <div className="link-col">
               <h5>Contacto</h5>
-              <a href="mailto:soporte@creciendo.app">soporte@creciendo.app</a>
+              <a href="mailto:estebanp192001@gmail.com">estebanp192001@gmail.com</a>
+              <a href="tel:+573168858161">+57 316 885 8161</a>
               <span className="footer-emergency-box">
                 <PhoneCall size={16} /> Emergencias: Llama al 123
               </span>
