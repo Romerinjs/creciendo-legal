@@ -320,7 +320,10 @@ async function deleteAccountDataDirectly(
     for (const space of spaces) {
       if (typeof space.id !== "string" || !uuid.test(space.id) || space.created_by !== session.userId) throw new Error("foreign_scope");
       const members = await readAll("care_space_members", "user_id", { care_space_id: `eq.${space.id}` });
-      if (!members.length || members.some((member) => member.user_id !== session.userId)) throw new Error("shared_scope");
+      // Membership rows can be absent on a space created by this guardian.
+      // Do not require a self-membership merely to clean up an owned space.
+      // Server authorization still governs every read and filtered DELETE.
+      if (members.some((member) => member.user_id !== session.userId)) throw new Error("shared_scope");
       const allChildren = await readAll("children", "id,created_by", { care_space_id: `eq.${space.id}` });
       if (allChildren.some((child) => child.created_by !== session.userId || !children.some((owned) => owned.id === child.id))) throw new Error("foreign_scope");
     }

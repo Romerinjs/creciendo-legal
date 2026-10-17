@@ -99,6 +99,14 @@ creadores o legal holds. Se bloquea todo el respaldo si el alcance es compartido
 incompleto o no se puede consultar. Todas las escrituras se filtran por el UUID
 verificado y/o los UUID de esos menores/espacios, usando solo su bearer.
 
+No se exige una membresía propia para limpiar un espacio cuyo `created_by`
+corresponde al usuario autenticado: una respuesta vacía de `care_space_members`
+no bloquea por sí sola ese caso. Siguen comprobándose el propietario, los menores,
+sus accesos y las retenciones, y se bloquea si aparecen miembros ajenos.
+Una respuesta vacía solo describe las filas visibles al token; no demuestra la
+ausencia global de miembros bajo RLS. Los permisos efectivos de borrado deben
+estar correctamente restringidos en el servidor; no se elevan privilegios aquí.
+
 Se copian los borrados de tablas dependientes del móvil, pero con las columnas
 actuales `actor_user_id` y `audit_events` en lugar de `sender_id`/`audit_logs`, sin
 borrar vistas ni archivar como sustituto del borrado. Los avatares se enumeran y

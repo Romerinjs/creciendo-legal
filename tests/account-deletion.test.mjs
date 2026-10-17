@@ -155,11 +155,12 @@ function cleanupMock(overrides = {}) {
       assert.ok(!["growth_series_points", "auth.users", "audit_logs"].some((name) => path.endsWith(name)));
       assert.ok(!url.searchParams.has("sender_id"));
       if (overrides.deleteFailure?.(path)) return json({ error: "blocked" }, 403);
-      return json(path.endsWith("children") ? [{ id: childId }] : path.endsWith("care_spaces") ? [{ id: spaceId }] : []);
+      return json(path.endsWith("children") ? [{ id: childId }] : path.endsWith("care_spaces") ? [{ id: url.searchParams.get("id")?.slice(3) }] : []);
     }
-    if (path === "/rest/v1/care_spaces") return rows([{ id: spaceId, created_by: directUser.id }]);
-    if (path === "/rest/v1/children") return rows(overrides.children ?? [{ id: childId, care_space_id: spaceId, created_by: directUser.id }]);
-    if (path === "/rest/v1/care_space_members") return rows(overrides.members ?? [{ user_id: directUser.id }]);
+    if (path === "/rest/v1/care_spaces") return rows(overrides.spaces ?? [{ id: spaceId, created_by: directUser.id }]);
+    const requestedSpace = url.searchParams.get("care_space_id")?.slice(3);
+    if (path === "/rest/v1/children") return rows(overrides.childrenBySpace?.[requestedSpace] ?? overrides.children ?? [{ id: childId, care_space_id: spaceId, created_by: directUser.id }]);
+    if (path === "/rest/v1/care_space_members") return rows(overrides.membersBySpace?.[requestedSpace] ?? overrides.members ?? [{ user_id: directUser.id }]);
     if (path === "/rest/v1/child_access") return rows([{ user_id: directUser.id }]);
     if (path === "/rest/v1/clinical_memory_legal_holds") return rows(overrides.holds ?? []);
     assert.fail(`Unexpected request: ${path}`);
@@ -185,6 +186,7 @@ test("known rolled-back view error activates scoped mobile cleanup then Auth RPC
 
 test("shared or foreign scopes and legal holds abort before any direct DELETE", async () => {
   for (const overrides of [
+    { spaces: [{ id: spaceId, created_by: "foreign-user" }], members: [] },
     { members: [{ user_id: directUser.id }, { user_id: "foreign-user" }] },
     { children: [{ id: childId, care_space_id: spaceId, created_by: "foreign-user" }] },
     { holds: [{ id: "legal-hold" }] },
@@ -195,6 +197,28 @@ test("shared or foreign scopes and legal holds abort before any direct DELETE", 
     assert.equal(calls.filter(({ init }) => init.method === "DELETE").length, 0);
     assert.equal(calls.filter(({ url }) => url.pathname.endsWith("/rpc/delete_user_account")).length, 1);
   }
+});
+
+test("an owned space without membership rows does not block mobile-compatible cleanup", async () => {
+  const { calls, fetcher } = cleanupMock({ members: [] });
+  await deleteAuthenticatedAccount(config, directSession(), true, fetcher);
+  const spaceDelete = calls.find(({ url, init }) => url.pathname === "/rest/v1/care_spaces" && init.method === "DELETE");
+  assert.ok(spaceDelete);
+  assert.equal(spaceDelete.url.searchParams.get("created_by"), `eq.${directUser.id}`);
+  assert.equal(calls.at(-1).url.pathname, "/rest/v1/rpc/delete_user_account");
+});
+
+test("one owned populated space plus an owned empty space can be processed in the same cleanup", async () => {
+  const emptySpace = "44444444-4444-4444-8444-444444444444";
+  const { calls, fetcher } = cleanupMock({
+    spaces: [{ id: spaceId, created_by: directUser.id }, { id: emptySpace, created_by: directUser.id }],
+    membersBySpace: { [emptySpace]: [] },
+    childrenBySpace: { [emptySpace]: [] },
+  });
+  await deleteAuthenticatedAccount(config, directSession(), true, fetcher);
+  const spaceDeletes = calls.filter(({ url, init }) => url.pathname === "/rest/v1/care_spaces" && init.method === "DELETE");
+  assert.deepEqual(spaceDeletes.map(({ url }) => url.searchParams.get("id")), [`eq.${spaceId}`, `eq.${emptySpace}`]);
+  assert.ok(spaceDeletes.every(({ url }) => url.searchParams.get("created_by") === `eq.${directUser.id}`));
 });
 
 test("failed direct DELETE stops the sequence and reports irreversible partial progress, not success", async () => {
