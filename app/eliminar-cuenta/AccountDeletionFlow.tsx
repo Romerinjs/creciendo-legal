@@ -249,7 +249,7 @@ export default function AccountDeletionFlow({ config }: { config: PublicSupabase
         <h2 ref={title} tabIndex={-1}>¿Eliminar tu cuenta definitivamente?</h2>
         <p>Has iniciado sesión como <strong className="account-email">{accountEmail}</strong>. Se eliminarán tu cuenta y los datos asociados, incluidos los documentos y las fotos. Esta acción no se puede deshacer.</p>
         <p>El borrado puede realizarse en varias etapas. Si alguna falla, los registros ya eliminados no podrán recuperarse y te indicaremos que el proceso quedó incompleto.</p>
-        <p>Si el servidor impide borrar el historial de crecimiento, archivaremos los perfiles pendientes, como en la app. En ese caso la cuenta y los datos conservados seguirán existiendo: archivar no equivale a eliminar.</p>
+        <p>Si el historial de crecimiento o las dependencias del chat impiden completar el borrado, archivaremos los perfiles pendientes, como en la app. En ese caso la cuenta y los datos conservados seguirán existiendo: archivar no equivale a eliminar.</p>
         <label className="account-confirm-check">
           <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} required disabled={busy} />
           <span>Entiendo que los datos borrados no podrán recuperarse y que, si no se puede completar la eliminación, los perfiles pendientes podrán archivarse.</span>

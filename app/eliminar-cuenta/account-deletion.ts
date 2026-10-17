@@ -9,7 +9,7 @@ export type DeletionOutcome =
   | { status: "deleted" }
   | { status: "archived"; archivedProfiles: number };
 
-class ImmutableAnthropometryError extends Error {}
+class ArchivableCleanupError extends Error {}
 
 type Fetcher = typeof fetch;
 type OAuthStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -293,8 +293,12 @@ async function deleteAccountDataDirectly(
     if (!response.ok) {
       let failure;
       try { failure = await response.json(); } catch { /* Unknown errors cannot activate archival. */ }
-      if (response.status === 403 && failure?.code === "42501" && failure?.message === "anthropometry_history_immutable") {
-        throw new ImmutableAnthropometryError();
+      const immutableHistory = response.status === 403 && failure?.code === "42501" && failure?.message === "anthropometry_history_immutable";
+      const retainedChatEvents = response.status === 409 && failure?.code === "23503"
+        && path.startsWith("/rest/v1/agent_sessions?")
+        && failure?.message === 'update or delete on table "agent_sessions" violates foreign key constraint "creciendo_channel_events_session_scope_fk" on table "creciendo_channel_events"';
+      if (init.method === "DELETE" && (immutableHistory || retainedChatEvents)) {
+        throw new ArchivableCleanupError();
       }
       throw new Error("cleanup_failed");
     }
@@ -381,7 +385,7 @@ async function deleteAccountDataDirectly(
         ]) await removeRows(table, filters);
         await removeRows("children", { id: `eq.${child.id}`, care_space_id: `eq.${child.care_space_id}`, created_by: `eq.${session.userId}` }, child.id as string);
       } catch (cause) {
-        if (!(cause instanceof ImmutableAnthropometryError)) throw cause;
+        if (!(cause instanceof ArchivableCleanupError)) throw cause;
         let archivedProfiles = 0;
         // Stop destructive cleanup. Archive only the still-pending verified scope.
         for (const pending of children.slice(index)) {

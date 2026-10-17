@@ -162,7 +162,7 @@ function cleanupMock(overrides = {}) {
       assert.equal(url.searchParams.get("select"), path.endsWith("guardian_profiles") ? "user_id" : "id");
       assert.ok(!["growth_series_points", "auth.users", "audit_logs"].some((name) => path.endsWith(name)));
       assert.ok(!url.searchParams.has("sender_id"));
-      if (overrides.deleteFailure?.(path)) return json(overrides.deleteError ?? { error: "blocked" }, 403);
+      if (overrides.deleteFailure?.(path)) return json(overrides.deleteError ?? { error: "blocked" }, overrides.deleteStatus ?? 403);
       return json(path.endsWith("children") ? [{ id: childId }] : path.endsWith("care_spaces") ? [{ id: url.searchParams.get("id")?.slice(3) }] : []);
     }
     if (path === "/rest/v1/care_spaces") return rows(overrides.spaces ?? [{ id: spaceId, created_by: directUser.id }]);
@@ -283,6 +283,37 @@ test("an unrelated permission error cannot activate the archival fallback", asyn
   const { calls, fetcher } = cleanupMock({
     deleteFailure: (path) => path.endsWith("anthropometric_measurements"),
     deleteError: { code: "42501", message: "permission denied" },
+  });
+  await assert.rejects(deleteAuthenticatedAccount(config, directSession(), true, fetcher), /eliminación quedó incompleta/);
+  assert.equal(calls.filter(({ init }) => init.method === "PATCH").length, 0);
+});
+
+test("restricted chat events archive pending profiles without deleting the events or retrying Auth", async () => {
+  const secondChild = "55555555-5555-4555-8555-555555555555";
+  const { calls, fetcher } = cleanupMock({
+    children: [childId, secondChild].map((id) => ({ id, care_space_id: spaceId, created_by: directUser.id })),
+    deleteFailure: (path) => path.endsWith("agent_sessions"),
+    deleteStatus: 409,
+    deleteError: {
+      code: "23503",
+      message: 'update or delete on table "agent_sessions" violates foreign key constraint "creciendo_channel_events_session_scope_fk" on table "creciendo_channel_events"',
+    },
+  });
+  const result = await deleteAuthenticatedAccount(config, directSession(), true, fetcher);
+  assert.deepEqual(result, { status: "archived", archivedProfiles: 2 });
+  const blockedIndex = calls.findIndex(({ url, init }) => url.pathname.endsWith("agent_sessions") && init.method === "DELETE");
+  const remaining = calls.slice(blockedIndex + 1);
+  assert.equal(remaining.length, 2);
+  assert.ok(remaining.every(({ init, url }) => init.method === "PATCH" && url.pathname === "/rest/v1/children"));
+  assert.equal(calls.filter(({ url }) => url.pathname.endsWith("creciendo_channel_events")).length, 0);
+  assert.equal(calls.filter(({ url }) => url.pathname.endsWith("/rpc/delete_user_account")).length, 1);
+});
+
+test("unrecognized FK failures still stop instead of archiving or deleting dependencies", async () => {
+  const { calls, fetcher } = cleanupMock({
+    deleteFailure: (path) => path.endsWith("agent_sessions"),
+    deleteStatus: 409,
+    deleteError: { code: "23503", message: 'foreign key constraint "unknown_constraint"' },
   });
   await assert.rejects(deleteAuthenticatedAccount(config, directSession(), true, fetcher), /eliminación quedó incompleta/);
   assert.equal(calls.filter(({ init }) => init.method === "PATCH").length, 0);

@@ -119,7 +119,11 @@ La confirmación del usuario advierte ese riesgo.
 ### Archivado compatible con el móvil, sin cambiar el backend
 
 Si el borrado directo recibe exactamente HTTP 403 / PostgreSQL 42501 con mensaje
-`anthropometry_history_immutable`, se detiene la limpieza destructiva. Se archivan
+`anthropometry_history_immutable`, se detiene la limpieza destructiva. También se
+activa este archivado si un `DELETE agent_sessions` devuelve HTTP 409 / PostgreSQL
+23503 por la FK exacta `creciendo_channel_events_session_scope_fk` desde
+`creciendo_channel_events`. No se borran esos eventos ni se relaja la FK para
+forzar el borrado de sesiones. Se archivan
 el perfil afectado y los perfiles pendientes del alcance ya comprobado, mediante
 `PATCH children` con `status: archived`, filtros por `id`, `care_space_id` y
 `created_by` del usuario autenticado. Cada respuesta debe confirmar exactamente
