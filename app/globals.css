@@ -1384,11 +1384,17 @@ img {
   border-radius: var(--radius-lg);
 }
 
-.btn-danger,
-.btn-danger:disabled {
+.btn-danger {
   color: #fff;
   background: #A94438;
-  opacity: 0.72;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: #8E352B;
+}
+
+.account-delete-action button:disabled {
+  opacity: 0.6;
   cursor: not-allowed;
 }
 
@@ -1402,6 +1408,90 @@ img {
   display: flex;
   justify-content: center;
   margin-top: 28px;
+}
+
+.account-auth-form {
+  text-align: left;
+  max-width: 540px;
+  margin: 0 auto;
+}
+
+.account-auth-form h2 {
+  font-size: 1.25rem;
+  line-height: 1.4;
+}
+
+.account-auth-form p {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  margin: 12px 0 20px;
+}
+
+.account-auth-form label:not(.account-confirm-check) {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 600;
+  margin: 16px 0 6px;
+}
+
+.account-auth-form input:not([type="checkbox"]) {
+  width: 100%;
+  min-height: 48px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-main);
+  font: inherit;
+}
+
+.account-delete-action :is(input, button, a):focus-visible {
+  outline: 3px solid var(--brand-primary);
+  outline-offset: 3px;
+}
+
+.account-flow-buttons {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 24px;
+}
+
+.account-flow-buttons .btn {
+  min-height: 44px;
+  font-family: inherit;
+}
+
+.account-confirm-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 0;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.account-confirm-check input {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  accent-color: var(--brand-primary);
+  margin-top: 2px;
+}
+
+.account-email { overflow-wrap: anywhere; }
+
+.account-auth-form .account-auth-help { font-size: 0.8rem; }
+
+.account-delete-action .account-flow-error {
+  color: #8E352B;
+  font-size: 0.9rem;
+  background: var(--brand-accent-light);
+  border: 1px solid #F1D9CF;
+  border-radius: var(--radius-sm);
+  padding: 14px;
+  margin-top: 20px;
+  text-align: left;
 }
 
 @media (max-width: 600px) {
@@ -2119,4 +2209,3 @@ img {
     transform: translateY(0);
   }
 }
-

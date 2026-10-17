@@ -1,6 +1,8 @@
 import Image from "next/image";
 import Link from "next/link";
 import { ArrowLeft, AlertTriangle, LockKeyhole, Trash2 } from "lucide-react";
+import AccountDeletionFlow from "./AccountDeletionFlow";
+import { getPublicSupabaseConfig } from "./account-deletion";
 
 export const metadata = {
   title: "Eliminar cuenta | Creciendo",
@@ -9,6 +11,10 @@ export const metadata = {
 };
 
 export default function EliminarCuentaPage() {
+  const config = getPublicSupabaseConfig(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_PUBLISHABLE_KEY,
+  );
   return (
     <div>
       <header className="navbar-header">
@@ -80,12 +86,7 @@ export default function EliminarCuentaPage() {
               </div>
             </div>
 
-            <div className="account-delete-action">
-              <button className="btn btn-danger btn-lg" type="button" disabled>
-                <Trash2 size={18} /> Eliminar mi cuenta
-              </button>
-              <p>La eliminación es permanente y no se puede deshacer.</p>
-            </div>
+            <AccountDeletionFlow config={config} />
 
             <div className="account-delete-back">
               <Link href="/legal/privacidad" className="doc-nav-btn">
