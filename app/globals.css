@@ -1481,6 +1481,13 @@ img {
 
 .account-email { overflow-wrap: anywhere; }
 
+.account-support-link {
+  color: var(--brand-primary-hover);
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .account-auth-form .account-auth-help { font-size: 0.8rem; }
 
 .account-google-button {

@@ -149,12 +149,20 @@ function cleanupMock(overrides = {}) {
       assert.deepEqual(prefixes, [`${directUser.id}/avatar.jpg`]);
       return json(prefixes.map((name) => ({ name })));
     }
+    if (init.method === "PATCH") {
+      assert.equal(path, "/rest/v1/children");
+      assert.equal(url.searchParams.get("created_by"), `eq.${directUser.id}`);
+      assert.equal(url.searchParams.get("care_space_id"), `eq.${spaceId}`);
+      assert.deepEqual(JSON.parse(init.body), { status: "archived" });
+      if (overrides.archiveFailure) return json({ error: "patch blocked" }, 403);
+      return json(overrides.archiveResult ?? [{ id: url.searchParams.get("id")?.slice(3), status: "archived" }]);
+    }
     if (init.method === "DELETE") {
       assert.ok(url.searchParams.size > 1, "Every table delete must have filters");
       assert.equal(url.searchParams.get("select"), path.endsWith("guardian_profiles") ? "user_id" : "id");
       assert.ok(!["growth_series_points", "auth.users", "audit_logs"].some((name) => path.endsWith(name)));
       assert.ok(!url.searchParams.has("sender_id"));
-      if (overrides.deleteFailure?.(path)) return json({ error: "blocked" }, 403);
+      if (overrides.deleteFailure?.(path)) return json(overrides.deleteError ?? { error: "blocked" }, 403);
       return json(path.endsWith("children") ? [{ id: childId }] : path.endsWith("care_spaces") ? [{ id: url.searchParams.get("id")?.slice(3) }] : []);
     }
     if (path === "/rest/v1/care_spaces") return rows(overrides.spaces ?? [{ id: spaceId, created_by: directUser.id }]);
@@ -241,4 +249,41 @@ test("missing exact-count scope information aborts without direct writes", async
     return fetcher(url, init);
   }), /No se inició/);
   assert.equal(calls.filter(({ init }) => init.method === "DELETE").length, 0);
+});
+
+test("immutable growth history archives pending owned profiles without claiming Auth deletion", async () => {
+  const secondChild = "55555555-5555-4555-8555-555555555555";
+  const { calls, fetcher } = cleanupMock({
+    children: [childId, secondChild].map((id) => ({ id, care_space_id: spaceId, created_by: directUser.id })),
+    deleteFailure: (path) => path.endsWith("anthropometric_measurements"),
+    deleteError: { code: "42501", message: "anthropometry_history_immutable" },
+  });
+  const outcome = await deleteAuthenticatedAccount(config, directSession(), true, fetcher);
+  assert.deepEqual(outcome, { status: "archived", archivedProfiles: 2 });
+  const blockedIndex = calls.findIndex(({ url, init }) => url.pathname.endsWith("anthropometric_measurements") && init.method === "DELETE");
+  const remaining = calls.slice(blockedIndex + 1);
+  assert.equal(remaining.length, 2);
+  assert.ok(remaining.every(({ init }) => init.method === "PATCH"));
+  assert.deepEqual(remaining.map(({ url }) => url.searchParams.get("id")), [`eq.${childId}`, `eq.${secondChild}`]);
+  assert.equal(calls.filter(({ url }) => url.pathname.endsWith("/rpc/delete_user_account")).length, 1);
+});
+
+test("failed or unconfirmed archival remains an incomplete operation", async () => {
+  for (const failure of [{ archiveFailure: true }, { archiveResult: [] }, { archiveResult: [{ id: childId, status: "active" }] }]) {
+    const { fetcher } = cleanupMock({
+      ...failure,
+      deleteFailure: (path) => path.endsWith("anthropometric_measurements"),
+      deleteError: { code: "42501", message: "anthropometry_history_immutable" },
+    });
+    await assert.rejects(deleteAuthenticatedAccount(config, directSession(), true, fetcher), /eliminación quedó incompleta/);
+  }
+});
+
+test("an unrelated permission error cannot activate the archival fallback", async () => {
+  const { calls, fetcher } = cleanupMock({
+    deleteFailure: (path) => path.endsWith("anthropometric_measurements"),
+    deleteError: { code: "42501", message: "permission denied" },
+  });
+  await assert.rejects(deleteAuthenticatedAccount(config, directSession(), true, fetcher), /eliminación quedó incompleta/);
+  assert.equal(calls.filter(({ init }) => init.method === "PATCH").length, 0);
 });

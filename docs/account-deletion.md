@@ -109,11 +109,35 @@ estar correctamente restringidos en el servidor; no se elevan privilegios aquí.
 
 Se copian los borrados de tablas dependientes del móvil, pero con las columnas
 actuales `actor_user_id` y `audit_events` en lugar de `sender_id`/`audit_logs`, sin
-borrar vistas ni archivar como sustituto del borrado. Los avatares se enumeran y
+borrar vistas. El archivado tiene un resultado separado y no sustituye una
+eliminación completa de cuenta. Los avatares se enumeran y
 eliminan mediante Storage API únicamente bajo `<userId>/`, antes de retirar el
 acceso. Cada respuesta debe ser correcta; un error detiene el proceso y se informa
 si hubo escrituras parciales. Son operaciones independientes, **no una transacción**.
 La confirmación del usuario advierte ese riesgo.
+
+### Archivado compatible con el móvil, sin cambiar el backend
+
+Si el borrado directo recibe exactamente HTTP 403 / PostgreSQL 42501 con mensaje
+`anthropometry_history_immutable`, se detiene la limpieza destructiva. Se archivan
+el perfil afectado y los perfiles pendientes del alcance ya comprobado, mediante
+`PATCH children` con `status: archived`, filtros por `id`, `care_space_id` y
+`created_by` del usuario autenticado. Cada respuesta debe confirmar exactamente
+el ID y el nuevo estado. Un permiso denegado genérico, timeout o respuesta vacía
+no se transforma en un archivado exitoso.
+
+El resultado es `{ status: 'archived', archivedProfiles: n }`, no `deleted`. No se
+invoca nuevamente la RPC, no se retiran membresías/perfil ni se borran archivos
+después de este resultado. La sesión web se cierra y la vista dice explícitamente
+que la cuenta **no se eliminó**, que hay datos conservados y que algunas operaciones
+anteriores sí pudieron borrar datos. La confirmación previa explica esta alternativa.
+Los perfiles solo desaparecerán de las pantallas móviles que filtren por estado
+activo; el archivado no garantiza por sí solo ocultarlos de todas las consultas.
+
+La cuenta Auth sigue existiendo y permite autenticarse nuevamente. Este flujo
+no es una revocación de acceso ni satisface por sí solo la eliminación total
+de datos; finalizarla sigue requiriendo corregir el backend. No se cambian triggers,
+RLS, funciones desplegadas ni se simula éxito incondicional como en el móvil.
 
 **Límite conocido:** copiar el respaldo no corrige la RPC desplegada ni sus otros
 errores de columnas, restricciones o triggers de inmutabilidad. Tampoco elimina

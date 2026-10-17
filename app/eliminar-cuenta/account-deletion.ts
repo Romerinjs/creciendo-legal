@@ -5,6 +5,11 @@ export type DeletionSession = Readonly<{
   email: string;
   expiresAt: number;
 }>;
+export type DeletionOutcome =
+  | { status: "deleted" }
+  | { status: "archived"; archivedProfiles: number };
+
+class ImmutableAnthropometryError extends Error {}
 
 type Fetcher = typeof fetch;
 type OAuthStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -211,7 +216,7 @@ export async function deleteAuthenticatedAccount(
   session: DeletionSession,
   confirmed: boolean,
   fetcher: Fetcher = fetch,
-): Promise<void> {
+): Promise<DeletionOutcome> {
   if (!confirmed) throw new AccountDeletionError("Confirma que deseas eliminar tu cuenta.");
   if (!session.accessToken || Date.now() >= session.expiresAt) {
     throw new AccountDeletionError("Tu sesión expiró. Vuelve a iniciar sesión.");
@@ -245,7 +250,8 @@ export async function deleteAuthenticatedAccount(
     if (response.status === 500 && failure?.code === "55000" && failure?.message === 'cannot delete from view "growth_series_points"') {
       // Explicit mobile-compatible recovery for this known, rolled-back SQL failure only.
       // Never run it for timeouts, auth failures or an unknown RPC result.
-      await deleteAccountDataDirectly(config, session, fetcher);
+      const cleanup = await deleteAccountDataDirectly(config, session, fetcher);
+      if (cleanup.status === "archived") return cleanup;
       const finalResponse = await request(fetcher, `${config.url}/rest/v1/rpc/delete_user_account`, {
         method: "POST",
         headers: headers(config, session.accessToken),
@@ -258,7 +264,7 @@ export async function deleteAuthenticatedAccount(
       if (finalReceipt !== "" && finalReceipt !== "null") {
         throw new AccountDeletionError("Se procesó la limpieza, pero no pudimos confirmar la eliminación de la cuenta. Contacta a soporte.");
       }
-      return;
+      return { status: "deleted" };
     }
     throw new AccountDeletionError("No se pudo completar la eliminación. No se ha confirmado el borrado de tu cuenta.");
   }
@@ -267,13 +273,14 @@ export async function deleteAuthenticatedAccount(
   if (receipt !== "" && receipt !== "null") {
     throw new AccountDeletionError("No pudimos confirmar el resultado del borrado. Contacta a soporte antes de reintentarlo.");
   }
+  return { status: "deleted" };
 }
 
 async function deleteAccountDataDirectly(
   config: PublicSupabaseConfig,
   session: DeletionSession,
   fetcher: Fetcher,
-): Promise<void> {
+): Promise<{ status: "cleaned" } | { status: "archived"; archivedProfiles: number }> {
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (!uuid.test(session.userId)) throw new AccountDeletionError("No pudimos verificar el alcance de la limpieza.");
   let writesStarted = false;
@@ -283,7 +290,14 @@ async function deleteAccountDataDirectly(
       ...init,
       headers: { ...headers(config, session.accessToken), ...init.headers },
     });
-    if (!response.ok) throw new Error("cleanup_failed");
+    if (!response.ok) {
+      let failure;
+      try { failure = await response.json(); } catch { /* Unknown errors cannot activate archival. */ }
+      if (response.status === 403 && failure?.code === "42501" && failure?.message === "anthropometry_history_immutable") {
+        throw new ImmutableAnthropometryError();
+      }
+      throw new Error("cleanup_failed");
+    }
     return response;
   };
   const readAll = async (table: string, select: string, filters: Record<string, string>) => {
@@ -353,18 +367,38 @@ async function deleteAccountDataDirectly(
       if (avatarPaths.length >= 10_000) throw new Error("scope_too_large");
     }
 
-    for (const child of children) {
+    for (const [index, child] of children.entries()) {
       const filters = { child_id: `eq.${child.id}`, care_space_id: `eq.${child.care_space_id}` };
       // Port of the mobile direct cleanup, using current actor column names.
-      // No DELETE on growth_series_points; no "archive" disguised as deletion.
-      for (const table of [
-        "messages", "tool_executions", "safety_evaluations",
-        "clinical_memory_embeddings", "clinical_memory_items", "conversation_summaries",
-        "agent_sessions", "anthropometric_measurements", "development_observations",
-        "vaccine_administrations", "child_food_reactions", "consent_records", "documents",
-        "child_access",
-      ]) await removeRows(table, filters);
-      await removeRows("children", { id: `eq.${child.id}`, care_space_id: `eq.${child.care_space_id}`, created_by: `eq.${session.userId}` }, child.id as string);
+      // Archival has a separate result; it must never be described as deletion.
+      try {
+        for (const table of [
+          "messages", "tool_executions", "safety_evaluations",
+          "clinical_memory_embeddings", "clinical_memory_items", "conversation_summaries",
+          "agent_sessions", "anthropometric_measurements", "development_observations",
+          "vaccine_administrations", "child_food_reactions", "consent_records", "documents",
+          "child_access",
+        ]) await removeRows(table, filters);
+        await removeRows("children", { id: `eq.${child.id}`, care_space_id: `eq.${child.care_space_id}`, created_by: `eq.${session.userId}` }, child.id as string);
+      } catch (cause) {
+        if (!(cause instanceof ImmutableAnthropometryError)) throw cause;
+        let archivedProfiles = 0;
+        // Stop destructive cleanup. Archive only the still-pending verified scope.
+        for (const pending of children.slice(index)) {
+          const query = new URLSearchParams({ select: "id,status", id: `eq.${pending.id}`, care_space_id: `eq.${pending.care_space_id}`, created_by: `eq.${session.userId}` });
+          writesStarted = true;
+          const response = await scopedRequest(`/rest/v1/children?${query}`, {
+            method: "PATCH",
+            headers: { Prefer: "return=representation" },
+            body: JSON.stringify({ status: "archived" }),
+          });
+          const archived = await response.json();
+          if (!Array.isArray(archived) || archived.length !== 1 || archived[0].id !== pending.id || archived[0].status !== "archived") throw new Error("unconfirmed_archive");
+          archivedProfiles++;
+        }
+        // Keep Auth, memberships, profile and retained files. No final delete RPC.
+        return { status: "archived", archivedProfiles };
+      }
     }
     // Do this before removing memberships/profile, while Storage authorization exists.
     for (let index = 0; index < avatarPaths.length; index += 100) {
@@ -381,9 +415,10 @@ async function deleteAccountDataDirectly(
     for (const space of spaces) await removeRows("care_spaces", { id: `eq.${space.id}`, created_by: `eq.${session.userId}` }, space.id as string);
     await removeRows("guardian_profiles", { user_id: `eq.${session.userId}` });
     await removeRows("audit_events", { actor_user_id: `eq.${session.userId}` });
+    return { status: "cleaned" };
   } catch {
     throw new AccountDeletionError(writesStarted
-      ? "La eliminación quedó incompleta: algunos registros pueden haberse borrado, pero no se confirmó la eliminación de tu cuenta. Contacta a soporte antes de reintentar."
+      ? "La eliminación quedó incompleta: algunos registros pueden haberse eliminado o archivado, pero no se confirmó la eliminación de tu cuenta. Contacta a soporte antes de reintentar."
       : "No pudimos comprobar que la limpieza directa afecte solo a tu cuenta. No se inició esa limpieza. Contacta a soporte.");
   }
 }
