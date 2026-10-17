@@ -5,9 +5,12 @@ import type { FormEvent } from "react";
 import { CheckCircle, LockKeyhole, Trash2 } from "lucide-react";
 import {
   AccountDeletionError,
+  clearGoogleDeletionFlow,
   deleteAuthenticatedAccount,
   endDeletionSession,
+  finishGoogleDeletionSignIn,
   signInForDeletion,
+  startGoogleDeletionSignIn,
 } from "./account-deletion";
 import type { DeletionSession, PublicSupabaseConfig } from "./account-deletion";
 
@@ -24,6 +27,7 @@ export default function AccountDeletionFlow({ config }: { config: PublicSupabase
   const title = useRef<HTMLHeadingElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const previousStep = useRef(step);
+  const googleCallback = useRef<Promise<DeletionSession> | null>(null);
 
   useEffect(() => {
     if (step !== "public") title.current?.focus();
@@ -39,6 +43,65 @@ export default function AccountDeletionFlow({ config }: { config: PublicSupabase
       session.current = null;
       if (config && active) void endDeletionSession(config, active);
     };
+  }, [config]);
+
+  useEffect(() => {
+    function onPageShow(event: PageTransitionEvent) {
+      // Browser Back can restore the page from before the provider redirect.
+      if (event.persisted && !session.current) {
+        try { clearGoogleDeletionFlow(window.sessionStorage); } catch { /* Storage may be disabled. */ }
+        locked.current = false;
+        setBusy(false);
+        setStep("login");
+      }
+    }
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  }, []);
+
+  useEffect(() => {
+    if (!googleCallback.current) {
+      const url = new URL(window.location.href);
+      const hash = new URLSearchParams(url.hash.slice(1));
+      if (!url.searchParams.has("code") && !url.searchParams.has("error") && !hash.has("error") && !hash.has("access_token")) return;
+      // Never retain OAuth codes, tokens or provider errors in history/referrers.
+      window.history.replaceState(null, "", "/eliminar-cuenta");
+      locked.current = true;
+      googleCallback.current = Promise.resolve().then(() => {
+        if (!config) throw new AccountDeletionError("No pudimos conectar con el servicio de cuentas. Contacta a soporte.");
+        return finishGoogleDeletionSignIn(config, url.href, window.sessionStorage);
+      });
+    }
+    let listening = true;
+    void Promise.resolve().then(() => {
+      if (listening) {
+        setStep("login");
+        setBusy(true);
+        setError("");
+      }
+    });
+    void googleCallback.current.then((active) => {
+      if (!listening) {
+        if (!mounted.current && config) void endDeletionSession(config, active);
+        return;
+      }
+      session.current = active;
+      setAccountEmail(active.email);
+      setConfirmed(false);
+      setStep("confirm");
+    }).catch((cause) => {
+      if (listening) {
+        setStep("login");
+        setError(cause instanceof AccountDeletionError ? cause.message : "No pudimos completar el acceso con Google. Vuelve a intentarlo.");
+      }
+    }).finally(() => {
+      if (listening) {
+        locked.current = false;
+        setBusy(false);
+      }
+    });
+    // Reuse the same exchange during StrictMode effect replay; codes are one-use.
+    return () => { listening = false; };
   }, [config]);
 
   useEffect(() => {
@@ -84,11 +147,29 @@ export default function AccountDeletionFlow({ config }: { config: PublicSupabase
     }
   }
 
+  async function loginWithGoogle() {
+    if (!config || locked.current) return;
+    locked.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      const destination = await startGoogleDeletionSignIn(config, window.location.origin, window.sessionStorage);
+      if (!mounted.current) return;
+      window.location.assign(destination);
+    } catch {
+      // Do not expose provider details or browser storage errors.
+      setError("No pudimos abrir el acceso con Google. Permite el almacenamiento de esta pestaña e inténtalo de nuevo.");
+      locked.current = false;
+      setBusy(false);
+    }
+  }
+
   function cancel() {
     if (locked.current) return;
     const active = session.current;
     session.current = null;
     if (config && active) void endDeletionSession(config, active);
+    try { clearGoogleDeletionFlow(window.sessionStorage); } catch { /* No credentials stored. */ }
     setEmail("");
     setAccountEmail("");
     setConfirmed(false);
@@ -141,7 +222,12 @@ export default function AccountDeletionFlow({ config }: { config: PublicSupabase
       {step === "login" && <form className="account-auth-form" onSubmit={login}>
         <span className="essential-icon"><LockKeyhole size={20} aria-hidden="true" /></span>
         <h2 ref={title} tabIndex={-1}>Inicia sesión para continuar</h2>
-        <p>Usa el correo y la contraseña de tu cuenta de Creciendo. Iniciar sesión no elimina tu cuenta.</p>
+        <p>Usa la misma cuenta con la que entras a Creciendo. Iniciar sesión no elimina tu cuenta.</p>
+        <button className="btn btn-secondary account-google-button" type="button" disabled={busy} onClick={loginWithGoogle}>
+          <span className="account-google-mark" aria-hidden="true">G</span>
+          Continuar con Google
+        </button>
+        <div className="account-auth-divider"><span>o con tu correo y contraseña</span></div>
         <label htmlFor="deletion-email">Correo electrónico</label>
         <input id="deletion-email" name="email" type="email" autoComplete="username" maxLength={254} value={email} onChange={(event) => setEmail(event.target.value)} required disabled={busy} />
         <label htmlFor="deletion-password">Contraseña</label>
@@ -150,12 +236,13 @@ export default function AccountDeletionFlow({ config }: { config: PublicSupabase
           <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? "Verificando…" : "Iniciar sesión"}</button>
           <button type="button" className="btn btn-secondary" onClick={cancel} disabled={busy}>Cancelar</button>
         </div>
-        <p className="account-auth-help">Si usas Google o Apple sin contraseña, puedes eliminar tu cuenta desde la aplicación.</p>
+        <p className="account-auth-help">Si tu cuenta usa exclusivamente Apple, continúa desde la aplicación.</p>
       </form>}
 
       {step === "confirm" && <form className="account-auth-form" onSubmit={remove}>
         <h2 ref={title} tabIndex={-1}>¿Eliminar tu cuenta definitivamente?</h2>
         <p>Has iniciado sesión como <strong className="account-email">{accountEmail}</strong>. Se eliminarán tu cuenta y los datos asociados, incluidos los documentos y las fotos. Esta acción no se puede deshacer.</p>
+        <p>El borrado puede realizarse en varias etapas. Si alguna falla, los registros ya eliminados no podrán recuperarse y te indicaremos que el proceso quedó incompleto.</p>
         <label className="account-confirm-check">
           <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} required disabled={busy} />
           <span>Entiendo que perderé mi cuenta y los datos asociados de forma permanente.</span>

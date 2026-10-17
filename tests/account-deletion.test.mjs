@@ -118,3 +118,103 @@ test("cancel/logout only ends this web session, never invokes deletion", async (
     return new Response(null, { status: 204 });
   });
 });
+
+const directUser = { ...user, id: "11111111-1111-4111-8111-111111111111" };
+const spaceId = "22222222-2222-4222-8222-222222222222";
+const childId = "33333333-3333-4333-8333-333333333333";
+const viewFailure = () => json({ code: "55000", message: 'cannot delete from view "growth_series_points"' }, 500);
+const rows = (data) => new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json", "Content-Range": `0-${Math.max(0, data.length - 1)}/${data.length}` } });
+const directSession = () => ({ ...session(), userId: directUser.id });
+
+function cleanupMock(overrides = {}) {
+  const calls = [];
+  let rpcCalls = 0;
+  const fetcher = async (address, init) => {
+    const url = new URL(address);
+    const path = url.pathname;
+    calls.push({ url, init });
+    assert.equal(init.headers.Authorization, "Bearer test-access-token");
+    if (path === "/auth/v1/user") return json(directUser);
+    if (path === "/rest/v1/rpc/delete_user_account") {
+      rpcCalls++;
+      return rpcCalls === 1 ? viewFailure() : (overrides.finalRpc?.() ?? json(null));
+    }
+    if (path === "/storage/v1/object/list/avatars") {
+      assert.equal(JSON.parse(init.body).prefix, `${directUser.id}/`);
+      return json(overrides.avatars ?? [{ id: "photo-id", name: "avatar.jpg" }]);
+    }
+    if (path === "/storage/v1/object/avatars") {
+      assert.equal(init.method, "DELETE");
+      const { prefixes } = JSON.parse(init.body);
+      assert.deepEqual(prefixes, [`${directUser.id}/avatar.jpg`]);
+      return json(prefixes.map((name) => ({ name })));
+    }
+    if (init.method === "DELETE") {
+      assert.ok(url.searchParams.size > 1, "Every table delete must have filters");
+      assert.equal(url.searchParams.get("select"), path.endsWith("guardian_profiles") ? "user_id" : "id");
+      assert.ok(!["growth_series_points", "auth.users", "audit_logs"].some((name) => path.endsWith(name)));
+      assert.ok(!url.searchParams.has("sender_id"));
+      if (overrides.deleteFailure?.(path)) return json({ error: "blocked" }, 403);
+      return json(path.endsWith("children") ? [{ id: childId }] : path.endsWith("care_spaces") ? [{ id: spaceId }] : []);
+    }
+    if (path === "/rest/v1/care_spaces") return rows([{ id: spaceId, created_by: directUser.id }]);
+    if (path === "/rest/v1/children") return rows(overrides.children ?? [{ id: childId, care_space_id: spaceId, created_by: directUser.id }]);
+    if (path === "/rest/v1/care_space_members") return rows(overrides.members ?? [{ user_id: directUser.id }]);
+    if (path === "/rest/v1/child_access") return rows([{ user_id: directUser.id }]);
+    if (path === "/rest/v1/clinical_memory_legal_holds") return rows(overrides.holds ?? []);
+    assert.fail(`Unexpected request: ${path}`);
+  };
+  return { calls, fetcher };
+}
+
+test("known rolled-back view error activates scoped mobile cleanup then Auth RPC, never an unfiltered delete", async () => {
+  const { calls, fetcher } = cleanupMock();
+  await deleteAuthenticatedAccount(config, directSession(), true, fetcher);
+  const deletes = calls.filter(({ init }) => init.method === "DELETE");
+  assert.ok(deletes.some(({ url }) => url.pathname === "/rest/v1/children"));
+  assert.ok(deletes.some(({ url }) => url.pathname === "/storage/v1/object/avatars"));
+  for (const { url } of deletes) {
+    if (url.searchParams.has("child_id")) {
+      assert.equal(url.searchParams.get("child_id"), `eq.${childId}`);
+      assert.equal(url.searchParams.get("care_space_id"), `eq.${spaceId}`);
+    }
+  }
+  assert.equal(calls.filter(({ url }) => url.pathname.endsWith("/rpc/delete_user_account")).length, 2);
+  assert.equal(calls.at(-1).url.pathname, "/rest/v1/rpc/delete_user_account");
+});
+
+test("shared or foreign scopes and legal holds abort before any direct DELETE", async () => {
+  for (const overrides of [
+    { members: [{ user_id: directUser.id }, { user_id: "foreign-user" }] },
+    { children: [{ id: childId, care_space_id: spaceId, created_by: "foreign-user" }] },
+    { holds: [{ id: "legal-hold" }] },
+    { avatars: [{ id: "photo", name: "../foreign-photo.jpg" }] },
+  ]) {
+    const { calls, fetcher } = cleanupMock(overrides);
+    await assert.rejects(deleteAuthenticatedAccount(config, directSession(), true, fetcher), /No se inició/);
+    assert.equal(calls.filter(({ init }) => init.method === "DELETE").length, 0);
+    assert.equal(calls.filter(({ url }) => url.pathname.endsWith("/rpc/delete_user_account")).length, 1);
+  }
+});
+
+test("failed direct DELETE stops the sequence and reports irreversible partial progress, not success", async () => {
+  const { calls, fetcher } = cleanupMock({ deleteFailure: (path) => path.endsWith("anthropometric_measurements") });
+  await assert.rejects(deleteAuthenticatedAccount(config, directSession(), true, fetcher), /eliminación quedó incompleta/);
+  assert.equal(calls.at(-1).url.pathname, "/rest/v1/anthropometric_measurements");
+  assert.equal(calls.filter(({ url }) => url.pathname.endsWith("/rpc/delete_user_account")).length, 1);
+});
+
+test("successful direct cleanup cannot claim account deletion when final Auth RPC still fails", async () => {
+  const { calls, fetcher } = cleanupMock({ finalRpc: () => json({ code: "42703" }, 400) });
+  await assert.rejects(deleteAuthenticatedAccount(config, directSession(), true, fetcher), /servidor no pudo completar/);
+  assert.equal(calls.filter(({ url }) => url.pathname.endsWith("/rpc/delete_user_account")).length, 2);
+});
+
+test("missing exact-count scope information aborts without direct writes", async () => {
+  const { calls, fetcher } = cleanupMock();
+  await assert.rejects(deleteAuthenticatedAccount(config, directSession(), true, async (url, init) => {
+    if (new URL(url).pathname === "/rest/v1/care_spaces") return json([]);
+    return fetcher(url, init);
+  }), /No se inició/);
+  assert.equal(calls.filter(({ init }) => init.method === "DELETE").length, 0);
+});

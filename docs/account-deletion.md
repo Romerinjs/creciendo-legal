@@ -21,30 +21,60 @@ La configuración del servidor valida HTTPS, dominio Supabase y tipo de clave
 antes de pasar exclusivamente la configuración pública al componente cliente.
 Sin configuración válida, el botón informa un error y no envía credenciales.
 
-Se usa Auth REST de Supabase para `grant_type=password`. Las cuentas exclusivamente
-Google/Apple sin contraseña deben continuar desde la aplicación. Cuentas con MFA
-verificado no pueden borrar mediante este login de un solo factor; se remiten a
-la app. No se cambian Auth, las plantillas de correo ni las RPC del proyecto.
+Se usa Auth REST de Supabase para `grant_type=password` o Google mediante OAuth
+con PKCE S256. Apple no está integrado; las cuentas exclusivamente Apple deben
+continuar desde la aplicación. Cuentas con MFA verificado no pueden borrar mediante
+este login de un solo factor; se remiten a la app. No se cambian Auth, las plantillas
+de correo ni las RPC del proyecto.
+
+### Configurar Google (sin modificar el acceso móvil)
+
+1. Confirmar que Google está habilitado en **Supabase → Authentication → Providers**
+   con un cliente OAuth web de Google válido. Las credenciales del proveedor se
+   configuran en Supabase, nunca en este repositorio o en el navegador.
+2. En **Authentication → URL Configuration → Redirect URLs**, permitir exactamente
+   `https://www.creciendo.com.co/eliminar-cuenta`. Si se usa otro dominio canónico,
+   añadir también su ruta exacta: la web vuelve al mismo origen donde empezó.
+   Para desarrollo, permitir `http://localhost:3000/eliminar-cuenta` por separado.
+   No usar comodines amplios en producción ni cambiar el destino de la app móvil.
+3. En Google Cloud, comprobar que el cliente web tiene autorizado el callback
+   de Supabase: `https://yapjiinrjsrothzgzxsv.supabase.co/auth/v1/callback`.
+4. Probar Google y cancelar en la confirmación final antes de probar ningún borrado.
+
+El usuario elige su cuenta de Google; se intercambia el código de un solo uso con
+el verificador de esta pestaña y se valida `/auth/v1/user`. El retorno solo muestra
+la cuenta y la confirmación sin marcar; nunca llama a la RPC de eliminación.
+Se rechazan callbacks sin flujo local, expirados, repetidos o con tokens implícitos.
+El código y los errores se retiran de la URL inmediatamente al procesar el retorno.
+
+El acceso OAuth de Supabase puede crear una cuenta si la identidad de Google todavía
+no existe y el proyecto permite registros. No hay una opción cliente equivalente a
+`shouldCreateUser: false` para OAuth. No se borra esa cuenta automáticamente. Si se
+requiere impedir esos registros, debe aprobarse una política/hook del backend;
+esta integración no cambia globalmente los registros ni la vinculación de identidades.
 
 ## Protecciones y límites
 
-- Token de acceso solo en memoria; sin localStorage, sessionStorage, cookies,
-  refresh token persistente ni credenciales en URLs/logs. La contraseña se retira
-  del formulario al enviar el acceso y no se guarda en estado React.
+- Token de acceso solo en memoria; sin tokens de sesión en localStorage,
+  sessionStorage o cookies, sin refresh token persistente ni credenciales en logs.
+  Solo el verificador PKCE y metadatos del flujo Google viven temporalmente en
+  sessionStorage durante la redirección (máximo diez minutos); se consumen al
+  volver o cancelar. No hay tokens de sesión en la URL; el código OAuth temporal
+  se retira mediante replaceState. La contraseña se retira del formulario al
+  enviar el acceso y no se guarda en estado React.
 - Sesión web de máximo diez minutos, sin renovación automática. Cancelar elimina
   la referencia local y solicita logout de esa sesión, no de otros dispositivos.
   Descargar/cerrar la pestaña descarta la memoria, pero no garantiza logout remoto;
   un JWT ya emitido puede seguir válido hasta su expiración en Supabase.
 - Antes del borrado se valida la identidad mediante `/auth/v1/user` y se llama
-  exactamente una vez a `POST /rest/v1/rpc/delete_user_account` con `{}` y el bearer
-  del usuario. No se mandan email ni user_id como objetivo, no hay clave privilegiada,
-  borrados REST de tablas ni fallback destructivo.
+  a `POST /rest/v1/rpc/delete_user_account` con `{}` y el bearer del usuario.
+  No se mandan email ni user_id como objetivo de la RPC ni hay clave privilegiada.
 - No se elimina nada por GET, al abrir la página, al iniciar sesión o al cancelar.
   Sin cookies automáticas, las peticiones exigen el bearer en memoria. La RPC
   debe seguir comprobando `auth.uid()` en el servidor: el frontend no sustituye
   sus controles de autorización ni arregla grants/RLS existentes.
-- Comprobación HTTP y respuesta void de la RPC; ante error o timeout no se anuncia
-  éxito ni se reintenta automáticamente. Un timeout puede ocurrir después del commit:
+- Comprobación HTTP y respuesta void de la RPC; ante timeout o error desconocido no
+  se anuncia éxito ni se reintenta automáticamente. Un timeout puede ocurrir después del commit:
   comprobar el estado antes de repetir. No se prueban borrados sobre cuentas reales.
 - Supabase debe tener configurados sus límites de intentos, protección contra
   fuerza bruta y, si procede, CAPTCHA (requiere integrar un proveedor en este flujo).
@@ -54,10 +84,40 @@ la app. No se cambian Auth, las plantillas de correo ni las RPC del proyecto.
   uso de cámara/micrófono/geolocalización. La CSP configurada es una base, no una
   protección completa contra XSS; una CSP con nonces requiere trabajo adicional.
 
-El propietario reporta que el flujo móvil elimina Auth, datos y fotos. Esta web
-reutiliza su RPC, no los borrados secundarios del cliente móvil. Es imprescindible
-verificar con cuenta de prueba autorizada que **la RPC por sí sola** realiza ese
-alcance y que no afecta registros de otros usuarios. Un HTTP exitoso no acredita
+### Respaldo directo solicitado por el propietario
+
+Ante **solo** el error HTTP 500 / PostgreSQL 55000 con mensaje exacto
+`cannot delete from view "growth_series_points"`, se ejecuta la limpieza directa
+portada del móvil. Otros errores, fallos de autenticación, respuestas desconocidas
+y timeouts no la activan. Después de la limpieza se llama una vez más a la RPC para
+completar Auth: si sigue fallando, nunca se presenta como cuenta eliminada.
+
+Se enumeran con paginación y conteo exacto los espacios/menores creados por el
+usuario autenticado. Antes de escribir se comprueba que los espacios pertenecen
+al usuario y no hay otros miembros, otros accesos al menor, menores de otros
+creadores o legal holds. Se bloquea todo el respaldo si el alcance es compartido,
+incompleto o no se puede consultar. Todas las escrituras se filtran por el UUID
+verificado y/o los UUID de esos menores/espacios, usando solo su bearer.
+
+Se copian los borrados de tablas dependientes del móvil, pero con las columnas
+actuales `actor_user_id` y `audit_events` en lugar de `sender_id`/`audit_logs`, sin
+borrar vistas ni archivar como sustituto del borrado. Los avatares se enumeran y
+eliminan mediante Storage API únicamente bajo `<userId>/`, antes de retirar el
+acceso. Cada respuesta debe ser correcta; un error detiene el proceso y se informa
+si hubo escrituras parciales. Son operaciones independientes, **no una transacción**.
+La confirmación del usuario advierte ese riesgo.
+
+**Límite conocido:** copiar el respaldo no corrige la RPC desplegada ni sus otros
+errores de columnas, restricciones o triggers de inmutabilidad. Tampoco elimina
+Auth directamente (eso sigue dependiendo de la RPC), ni demuestra que los objetos
+clínicos vinculados a `documents` se hayan borrado de Storage. Estos puntos requieren
+resolver el backend; no se copian los errores ignorados ni el éxito incondicional
+del móvil. Los filtros y verificaciones frontend no sustituyen RLS/autorización
+del servidor ni impiden una modificación concurrente del alcance compartido.
+
+El propietario reporta que el flujo móvil elimina Auth, datos y fotos. Es imprescindible
+verificar con cuenta de prueba autorizada que el flujo real completa ese alcance
+y no afecta registros de otros usuarios. Un HTTP exitoso no acredita
 por sí solo la limpieza completa de archivos, copias de seguridad o datos derivados.
 Los hallazgos de RLS/grants en Supabase requieren revisión independiente; esta
 implementación no garantiza que el proyecto remoto esté libre de exposición.

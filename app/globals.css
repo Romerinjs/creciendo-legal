@@ -1483,6 +1483,36 @@ img {
 
 .account-auth-form .account-auth-help { font-size: 0.8rem; }
 
+.account-google-button {
+  width: 100%;
+  min-height: 48px;
+  font-family: inherit;
+}
+
+.account-google-mark {
+  font-family: Arial, sans-serif;
+  font-weight: 700;
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.account-auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  margin: 20px 0;
+}
+
+.account-auth-divider::before,
+.account-auth-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border-light);
+}
+
 .account-delete-action .account-flow-error {
   color: #8E352B;
   font-size: 0.9rem;
