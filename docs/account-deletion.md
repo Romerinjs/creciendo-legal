@@ -1,170 +1,69 @@
 # Eliminación de cuenta web
 
-La página `/eliminar-cuenta` y el resto del sitio permanecen públicos. Solo el
-botón de eliminación abre el inicio de sesión. El acceso por correo/contraseña
-no crea usuarios ni ejecuta el borrado. Una segunda pantalla identifica la
-cuenta autenticada, exige marcar la confirmación y pulsar el botón definitivo.
+La página `/eliminar-cuenta` permanece pública. El recorrido es **Eliminar mi
+cuenta → iniciar sesión → confirmar eliminación → solicitud recibida**. Abrir
+la página, autenticarse o cancelar no solicita ningún borrado.
 
-## Configuración de despliegue
+## Configuración
 
-Establecer estas variables en el entorno de compilación de Next.js:
+En el entorno de compilación de Next.js establecer `SUPABASE_URL` y
+`SUPABASE_PUBLISHABLE_KEY` del proyecto Creciendo. Solo se admiten HTTPS y claves
+públicas publishable/anon correspondientes al proyecto. Nunca usar service_role,
+claves secretas o credenciales administrativas. Reconstruir tras cambiar estas
+variables, ya que la página se prerenderiza.
 
-```dotenv
-SUPABASE_URL=https://yapjiinrjsrothzgzxsv.supabase.co
-SUPABASE_PUBLISHABLE_KEY=<clave-publica-publishable-o-anon-del-proyecto>
-```
+Google usa PKCE S256, verificador de un solo uso en sessionStorage y retorno
+exacto al mismo origen `/eliminar-cuenta`. Eliminar el código OAuth del historial
+antes de procesarlo. Supabase debe permitir la URL canónica exacta. Las cuentas
+exclusivamente Apple y las que requieren MFA continúan desde la aplicación.
 
-La ruta se prerenderiza: reconstruir/republicar tras cambiar las variables.
-No guardar valores reales en el repositorio. Nunca usar una clave `service_role`,
-`sb_secret_*`, access token de administración o contraseña de base de datos.
-La configuración del servidor valida HTTPS, dominio Supabase y tipo de clave
-antes de pasar exclusivamente la configuración pública al componente cliente.
-Sin configuración válida, el botón informa un error y no envía credenciales.
+## Contrato vigente
 
-Se usa Auth REST de Supabase para `grant_type=password` o Google mediante OAuth
-con PKCE S256. Apple no está integrado; las cuentas exclusivamente Apple deben
-continuar desde la aplicación. Cuentas con MFA verificado no pueden borrar mediante
-este login de un solo factor; se remiten a la app. No se cambian Auth, las plantillas
-de correo ni las RPC del proyecto.
+Tras confirmar, se vuelve a validar la identidad con Auth. El cliente llama a
+`POST /api/account-deletion`, con el bearer únicamente en memoria y una clave
+idempotente aleatoria por sesión. El servidor Next reenvía exclusivamente esa
+credencial, la clave y `{version:"account-deletion.v1",confirmed:true}` a
+`https://agent.creciendo.com.co/creciendo/v1/account/deletion`.
 
-### Configurar Google (sin modificar el acceso móvil)
+No se aceptan objetivos de borrado suministrados por el navegador, ni se reenvían
+cookies, claves privilegiadas o cabeceras arbitrarias. El proxy exige mismo
+origen, limita el cuerpo a 256 bytes, impide redirecciones y aplica timeout de
+20 segundos. Las respuestas no se almacenan en caché y los errores no exponen
+información del proveedor.
 
-1. Confirmar que Google está habilitado en **Supabase → Authentication → Providers**
-   con un cliente OAuth web de Google válido. Las credenciales del proveedor se
-   configuran en Supabase, nunca en este repositorio o en el navegador.
-2. En **Authentication → URL Configuration → Redirect URLs**, permitir exactamente
-   `https://www.creciendo.com.co/eliminar-cuenta`. Si se usa otro dominio canónico,
-   añadir también su ruta exacta: la web vuelve al mismo origen donde empezó.
-   Para desarrollo, permitir `http://localhost:3000/eliminar-cuenta` por separado.
-   No usar comodines amplios en producción ni cambiar el destino de la app móvil.
-3. En Google Cloud, comprobar que el cliente web tiene autorizado el callback
-   de Supabase: `https://yapjiinrjsrothzgzxsv.supabase.co/auth/v1/callback`.
-4. Probar Google y cancelar en la confirmación final antes de probar ningún borrado.
+Solo un HTTP 202 con recibo estricto `account-deletion.v1`, `status:"queued"`,
+`requestId` UUID y `accessRevoked:true` produce la pantalla de solicitud recibida.
+Esto confirma el bloqueo del acceso y el inicio del proceso, **no** que todos los
+datos ya desaparecieron. Se borran por lotes periódicos los accesos, chats/copias
+internas y finalmente los datos de niños sin otro tutor. Los perfiles compartidos
+se conservan para los demás tutores.
 
-El usuario elige su cuenta de Google; se intercambia el código de un solo uso con
-el verificador de esta pestaña y se valida `/auth/v1/user`. El retorno solo muestra
-la cuenta y la confirmación sin marcar; nunca llama a la RPC de eliminación.
-Se rechazan callbacks sin flujo local, expirados, repetidos o con tokens implícitos.
-El código y los errores se retiran de la URL inmediatamente al procesar el retorno.
+Se retiraron la RPC antigua `delete_user_account`, el borrado directo de tablas y
+Storage y el respaldo que archivaba perfiles. La autorización y el aislamiento
+siguen perteneciendo al backend y sus políticas RLS.
 
-El acceso OAuth de Supabase puede crear una cuenta si la identidad de Google todavía
-no existe y el proyecto permite registros. No hay una opción cliente equivalente a
-`shouldCreateUser: false` para OAuth. No se borra esa cuenta automáticamente. Si se
-requiere impedir esos registros, debe aprobarse una política/hook del backend;
-esta integración no cambia globalmente los registros ni la vinculación de identidades.
+Un fallo de red conserva la sesión ya validada y la misma clave para un reintento
+explícito; no hay reintentos automáticos. Una respuesta perdida puede ocurrir
+después del bloqueo, por lo que no se consulta de nuevo Auth en ese reintento.
+La sesión web caduca como máximo en diez minutos, sin renovación ni refresh token
+persistido. Cancelar descarta la memoria y cierra solo esta sesión web, no las de
+otros dispositivos.
 
-## Protecciones y límites
+## Validación
 
-- Token de acceso solo en memoria; sin tokens de sesión en localStorage,
-  sessionStorage o cookies, sin refresh token persistente ni credenciales en logs.
-  Solo el verificador PKCE y metadatos del flujo Google viven temporalmente en
-  sessionStorage durante la redirección (máximo diez minutos); se consumen al
-  volver o cancelar. No hay tokens de sesión en la URL; el código OAuth temporal
-  se retira mediante replaceState. La contraseña se retira del formulario al
-  enviar el acceso y no se guarda en estado React.
-- Sesión web de máximo diez minutos, sin renovación automática. Cancelar elimina
-  la referencia local y solicita logout de esa sesión, no de otros dispositivos.
-  Descargar/cerrar la pestaña descarta la memoria, pero no garantiza logout remoto;
-  un JWT ya emitido puede seguir válido hasta su expiración en Supabase.
-- Antes del borrado se valida la identidad mediante `/auth/v1/user` y se llama
-  a `POST /rest/v1/rpc/delete_user_account` con `{}` y el bearer del usuario.
-  No se mandan email ni user_id como objetivo de la RPC ni hay clave privilegiada.
-- No se elimina nada por GET, al abrir la página, al iniciar sesión o al cancelar.
-  Sin cookies automáticas, las peticiones exigen el bearer en memoria. La RPC
-  debe seguir comprobando `auth.uid()` en el servidor: el frontend no sustituye
-  sus controles de autorización ni arregla grants/RLS existentes.
-- Comprobación HTTP y respuesta void de la RPC; ante timeout o error desconocido no
-  se anuncia éxito ni se reintenta automáticamente. Un timeout puede ocurrir después del commit:
-  comprobar el estado antes de repetir. No se prueban borrados sobre cuentas reales.
-- Supabase debe tener configurados sus límites de intentos, protección contra
-  fuerza bruta y, si procede, CAPTCHA (requiere integrar un proveedor en este flujo).
-  Los botones deshabilitados evitan doble envío local, no sustituyen rate limiting
-  distribuido ni autorización del backend.
-- Cabeceras contra framing/clickjacking, sniffing de contenido, envío de referrer y
-  uso de cámara/micrófono/geolocalización. La CSP configurada es una base, no una
-  protección completa contra XSS; una CSP con nonces requiere trabajo adicional.
+- `npm test`: autenticación, PKCE, confirmación, aislamiento, recibos estrictos,
+  reintentos idempotentes, proxy, redacción de errores y ausencia de fallback.
+- `npx tsc --noEmit`, `npm run lint` y `npm run build`.
+- Verificar en navegador el acceso público, inicio de sesión, confirmación y
+  cancelación. Para ejecutar un borrado real usar exclusivamente una cuenta
+  sintética y desechable autorizada; nunca cuentas habituales ni niños reales.
 
-### Respaldo directo solicitado por el propietario
-
-Ante **solo** el error HTTP 500 / PostgreSQL 55000 con mensaje exacto
-`cannot delete from view "growth_series_points"`, se ejecuta la limpieza directa
-portada del móvil. Otros errores, fallos de autenticación, respuestas desconocidas
-y timeouts no la activan. Después de la limpieza se llama una vez más a la RPC para
-completar Auth: si sigue fallando, nunca se presenta como cuenta eliminada.
-
-Se enumeran con paginación y conteo exacto los espacios/menores creados por el
-usuario autenticado. Antes de escribir se comprueba que los espacios pertenecen
-al usuario y no hay otros miembros, otros accesos al menor, menores de otros
-creadores o legal holds. Se bloquea todo el respaldo si el alcance es compartido,
-incompleto o no se puede consultar. Todas las escrituras se filtran por el UUID
-verificado y/o los UUID de esos menores/espacios, usando solo su bearer.
-
-No se exige una membresía propia para limpiar un espacio cuyo `created_by`
-corresponde al usuario autenticado: una respuesta vacía de `care_space_members`
-no bloquea por sí sola ese caso. Siguen comprobándose el propietario, los menores,
-sus accesos y las retenciones, y se bloquea si aparecen miembros ajenos.
-Una respuesta vacía solo describe las filas visibles al token; no demuestra la
-ausencia global de miembros bajo RLS. Los permisos efectivos de borrado deben
-estar correctamente restringidos en el servidor; no se elevan privilegios aquí.
-
-Se copian los borrados de tablas dependientes del móvil, pero con las columnas
-actuales `actor_user_id` y `audit_events` en lugar de `sender_id`/`audit_logs`, sin
-borrar vistas. El archivado tiene un resultado separado y no sustituye una
-eliminación completa de cuenta. Los avatares se enumeran y
-eliminan mediante Storage API únicamente bajo `<userId>/`, antes de retirar el
-acceso. Cada respuesta debe ser correcta; un error detiene el proceso y se informa
-si hubo escrituras parciales. Son operaciones independientes, **no una transacción**.
-La confirmación del usuario advierte ese riesgo.
-
-### Archivado compatible con el móvil, sin cambiar el backend
-
-Si el borrado directo recibe exactamente HTTP 403 / PostgreSQL 42501 con mensaje
-`anthropometry_history_immutable`, se detiene la limpieza destructiva. También se
-activa este archivado si un `DELETE agent_sessions` devuelve HTTP 409 / PostgreSQL
-23503 por la FK exacta `creciendo_channel_events_session_scope_fk` desde
-`creciendo_channel_events`. No se borran esos eventos ni se relaja la FK para
-forzar el borrado de sesiones. Se archivan
-el perfil afectado y los perfiles pendientes del alcance ya comprobado, mediante
-`PATCH children` con `status: archived`, filtros por `id`, `care_space_id` y
-`created_by` del usuario autenticado. Cada respuesta debe confirmar exactamente
-el ID y el nuevo estado. Un permiso denegado genérico, timeout o respuesta vacía
-no se transforma en un archivado exitoso.
-
-El resultado es `{ status: 'archived', archivedProfiles: n }`, no `deleted`. No se
-invoca nuevamente la RPC, no se retiran membresías/perfil ni se borran archivos
-después de este resultado. La sesión web se cierra y la vista dice explícitamente
-que la cuenta **no se eliminó**, que hay datos conservados y que algunas operaciones
-anteriores sí pudieron borrar datos. La confirmación previa explica esta alternativa.
-Los perfiles solo desaparecerán de las pantallas móviles que filtren por estado
-activo; el archivado no garantiza por sí solo ocultarlos de todas las consultas.
-
-La cuenta Auth sigue existiendo y permite autenticarse nuevamente. Este flujo
-no es una revocación de acceso ni satisface por sí solo la eliminación total
-de datos; finalizarla sigue requiriendo corregir el backend. No se cambian triggers,
-RLS, funciones desplegadas ni se simula éxito incondicional como en el móvil.
-
-**Límite conocido:** copiar el respaldo no corrige la RPC desplegada ni sus otros
-errores de columnas, restricciones o triggers de inmutabilidad. Tampoco elimina
-Auth directamente (eso sigue dependiendo de la RPC), ni demuestra que los objetos
-clínicos vinculados a `documents` se hayan borrado de Storage. Estos puntos requieren
-resolver el backend; no se copian los errores ignorados ni el éxito incondicional
-del móvil. Los filtros y verificaciones frontend no sustituyen RLS/autorización
-del servidor ni impiden una modificación concurrente del alcance compartido.
-
-El propietario reporta que el flujo móvil elimina Auth, datos y fotos. Es imprescindible
-verificar con cuenta de prueba autorizada que el flujo real completa ese alcance
-y no afecta registros de otros usuarios. Un HTTP exitoso no acredita
-por sí solo la limpieza completa de archivos, copias de seguridad o datos derivados.
-Los hallazgos de RLS/grants en Supabase requieren revisión independiente; esta
-implementación no garantiza que el proyecto remoto esté libre de exposición.
-
-## Verificación
-
-`npm test` usa respuestas simuladas: no se conecta a Supabase. Cubre configuración,
-login sin borrado, expiración, confirmación, identidad, MFA, errores, no reintentos
-y cancelación. Ejecutar además `npm run lint` y `npm run build`.
-
-Antes de publicar, en HTTPS y con cuentas ficticias autorizadas: comprobar login
-válido/inválido, cancelación, navegación por teclado, expiración, doble clic,
-errores de red y que otro usuario nunca sea afectado. La prueba destructiva requiere
-aprobación específica y un entorno/cuenta descartable. No se ha ejecutado aquí.
+El despliegue debe mantener las variables públicas existentes. No cambia Auth,
+RLS, el calendario del worker ni las políticas legales publicadas.
+Validated 2026-10-30:
+- npm test: 23 passed, including Google PKCE, Auth identity, strict queued receipt, idempotent retry, proxy origin/body/actor guards and no direct cleanup.
+- npx tsc --noEmit: passed.
+- npm run lint: 0 errors, 3 pre-existing unused import warnings.
+- npx next build --webpack: passed, route /api/account-deletion dynamic.
+- Default Turbopack on this Windows host failed while creating the CSS worker; no product code or deployment bundler setting changed to hide it.
+Production browser verification and deployment remain pending.
