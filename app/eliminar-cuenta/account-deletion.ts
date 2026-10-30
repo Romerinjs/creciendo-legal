@@ -5,11 +5,8 @@ export type DeletionSession = Readonly<{
   email: string;
   expiresAt: number;
 }>;
-export type DeletionOutcome =
-  | { status: "deleted" }
-  | { status: "archived"; archivedProfiles: number };
-
-class ArchivableCleanupError extends Error {}
+export type DeletionOutcome = { status: "queued"; requestId: string };
+const deletionAttempts = new WeakMap<DeletionSession, string>();
 
 type Fetcher = typeof fetch;
 type OAuthStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -17,9 +14,11 @@ const GOOGLE_FLOW_KEY = "creciendo.account-deletion.google-pkce";
 const GOOGLE_FLOW_TTL = 10 * 60 * 1000;
 
 export class AccountDeletionError extends Error {
-  constructor(message: string) {
+  requiresSignIn: boolean;
+  constructor(message: string, requiresSignIn = false) {
     super(message);
     this.name = "AccountDeletionError";
+    this.requiresSignIn = requiresSignIn;
   }
 }
 
@@ -218,213 +217,47 @@ export async function deleteAuthenticatedAccount(
   fetcher: Fetcher = fetch,
 ): Promise<DeletionOutcome> {
   if (!confirmed) throw new AccountDeletionError("Confirma que deseas eliminar tu cuenta.");
-  if (!session.accessToken || Date.now() >= session.expiresAt) {
-    throw new AccountDeletionError("Tu sesión expiró. Vuelve a iniciar sesión.");
+  const checkExpiry = () => {
+    if (!session.accessToken || Date.now() >= session.expiresAt) {
+      throw new AccountDeletionError("Tu sesión expiró. Vuelve a iniciar sesión.", true);
+    }
+  };
+  checkExpiry();
+  let key = deletionAttempts.get(session);
+  if (!key) {
+    // Validate before the first attempt. A retry retains this verified session/key:
+    // a response may have been lost after the server revoked access.
+    const userResponse = await request(fetcher, config.url + "/auth/v1/user", {
+      method: "GET", headers: headers(config, session.accessToken),
+    });
+    if (!userResponse.ok) throw new AccountDeletionError("No pudimos validar tu sesión. Vuelve a iniciar sesión.", true);
+    const user = await userResponse.json();
+    if (user.id !== session.userId || user.email !== session.email || !user.email_confirmed_at || user.is_anonymous === true) {
+      throw new AccountDeletionError("No pudimos validar tu identidad. Vuelve a iniciar sesión.", true);
+    }
+    if (Array.isArray(user.factors) && user.factors.some((factor: { status?: string }) => factor.status === "verified")) {
+      throw new AccountDeletionError("Esta cuenta requiere verificación de dos factores. Continúa desde la aplicación.", true);
+    }
+    checkExpiry();
+    key = crypto.randomUUID();
+    deletionAttempts.set(session, key);
   }
-  // Verify with Auth, not a locally decoded JWT or a user ID supplied to the RPC.
-  const userResponse = await request(fetcher, `${config.url}/auth/v1/user`, {
-    method: "GET",
-    headers: headers(config, session.accessToken),
-  });
-  if (!userResponse.ok) throw new AccountDeletionError("No pudimos validar tu sesión. Vuelve a iniciar sesión.");
-  const user = await userResponse.json();
-  if (user.id !== session.userId || !user.email_confirmed_at || user.is_anonymous === true) {
-    throw new AccountDeletionError("No pudimos validar tu identidad. Vuelve a iniciar sesión.");
-  }
-  // Neither password nor Google login satisfies an enrolled second factor.
-  if (Array.isArray(user.factors) && user.factors.some((factor: { status?: string }) => factor.status === "verified")) {
-    throw new AccountDeletionError("Esta cuenta requiere verificación de dos factores. Continúa desde la aplicación.");
-  }
-  if (Date.now() >= session.expiresAt) {
-    throw new AccountDeletionError("Tu sesión expiró. Vuelve a iniciar sesión.");
-  }
-
-  const response = await request(fetcher, `${config.url}/rest/v1/rpc/delete_user_account`, {
+  const response = await request(fetcher, "/api/account-deletion", {
     method: "POST",
-    headers: headers(config, session.accessToken),
-    body: JSON.stringify({}),
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + session.accessToken, "Idempotency-Key": key },
+    body: JSON.stringify({ version: "account-deletion.v1", confirmed: true }),
   });
-  if (!response.ok) {
-    let failure;
-    try { failure = await response.json(); } catch { /* Unknown failures must not trigger direct writes. */ }
-    if (response.status === 500 && failure?.code === "55000" && failure?.message === 'cannot delete from view "growth_series_points"') {
-      // Explicit mobile-compatible recovery for this known, rolled-back SQL failure only.
-      // Never run it for timeouts, auth failures or an unknown RPC result.
-      const cleanup = await deleteAccountDataDirectly(config, session, fetcher);
-      if (cleanup.status === "archived") return cleanup;
-      const finalResponse = await request(fetcher, `${config.url}/rest/v1/rpc/delete_user_account`, {
-        method: "POST",
-        headers: headers(config, session.accessToken),
-        body: JSON.stringify({}),
-      });
-      if (!finalResponse.ok) {
-        throw new AccountDeletionError("La limpieza directa se ejecutó, pero el servidor no pudo completar la eliminación de la cuenta. Contacta a soporte antes de reintentar.");
-      }
-      const finalReceipt = (await finalResponse.text()).trim();
-      if (finalReceipt !== "" && finalReceipt !== "null") {
-        throw new AccountDeletionError("Se procesó la limpieza, pero no pudimos confirmar la eliminación de la cuenta. Contacta a soporte.");
-      }
-      return { status: "deleted" };
-    }
-    throw new AccountDeletionError("No se pudo completar la eliminación. No se ha confirmado el borrado de tu cuenta.");
+  if (response.status === 401) {
+    throw new AccountDeletionError("Tu sesión expiró. Vuelve a iniciar sesión.", true);
   }
-  // Existing RPC returns void (null/empty), not an application-level success object.
-  const receipt = (await response.text()).trim();
-  if (receipt !== "" && receipt !== "null") {
-    throw new AccountDeletionError("No pudimos confirmar el resultado del borrado. Contacta a soporte antes de reintentarlo.");
+  let receipt;
+  try { receipt = await response.json(); } catch { /* Void is never a receipt. */ }
+  if (response.status !== 202 || !receipt || Object.keys(receipt).sort().join(",") !== "accessRevoked,requestId,status,version" ||
+    receipt.version !== "account-deletion.v1" || receipt.status !== "queued" || receipt.accessRevoked !== true ||
+    typeof receipt.requestId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(receipt.requestId)) {
+    throw new AccountDeletionError("No pudimos confirmar la solicitud. Puedes reintentar sin duplicar el proceso.");
   }
-  return { status: "deleted" };
-}
-
-async function deleteAccountDataDirectly(
-  config: PublicSupabaseConfig,
-  session: DeletionSession,
-  fetcher: Fetcher,
-): Promise<{ status: "cleaned" } | { status: "archived"; archivedProfiles: number }> {
-  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!uuid.test(session.userId)) throw new AccountDeletionError("No pudimos verificar el alcance de la limpieza.");
-  let writesStarted = false;
-  const scopedRequest = async (path: string, init: RequestInit = {}) => {
-    if (Date.now() >= session.expiresAt) throw new Error("expired");
-    const response = await request(fetcher, `${config.url}${path}`, {
-      ...init,
-      headers: { ...headers(config, session.accessToken), ...init.headers },
-    });
-    if (!response.ok) {
-      let failure;
-      try { failure = await response.json(); } catch { /* Unknown errors cannot activate archival. */ }
-      const immutableHistory = response.status === 403 && failure?.code === "42501" && failure?.message === "anthropometry_history_immutable";
-      const retainedChatEvents = response.status === 409 && failure?.code === "23503"
-        && path.startsWith("/rest/v1/agent_sessions?")
-        && failure?.message === 'update or delete on table "agent_sessions" violates foreign key constraint "creciendo_channel_events_session_scope_fk" on table "creciendo_channel_events"';
-      if (init.method === "DELETE" && (immutableHistory || retainedChatEvents)) {
-        throw new ArchivableCleanupError();
-      }
-      throw new Error("cleanup_failed");
-    }
-    return response;
-  };
-  const readAll = async (table: string, select: string, filters: Record<string, string>) => {
-    const rows: Record<string, unknown>[] = [];
-    let total = 0;
-    do {
-      const query = new URLSearchParams({ select, ...filters, limit: "100", offset: String(rows.length) });
-      const response = await scopedRequest(`/rest/v1/${table}?${query}`, { headers: { Prefer: "count=exact" } });
-      const count = response.headers.get("content-range")?.split("/")[1];
-      if (!count || !/^\d+$/.test(count)) throw new Error("unknown_scope");
-      total = Number(count);
-      const batch = await response.json();
-      if (!Array.isArray(batch) || (!batch.length && rows.length < total)) throw new Error("incomplete_scope");
-      rows.push(...batch);
-      if (rows.length > 10_000) throw new Error("scope_too_large");
-    } while (rows.length < total);
-    return rows;
-  };
-  const removeRows = async (table: string, filters: Record<string, string>, expectedId?: string) => {
-    const identityColumn = table === "guardian_profiles" ? "user_id" : "id";
-    const query = new URLSearchParams({ select: identityColumn, ...filters });
-    writesStarted = true;
-    const response = await scopedRequest(`/rest/v1/${table}?${query}`, {
-      method: "DELETE", headers: { Prefer: "return=representation" },
-    });
-    const removed = await response.json();
-    if (!Array.isArray(removed) || (expectedId && !removed.some((row) => row[identityColumn] === expectedId))) throw new Error("unconfirmed_delete");
-  };
-  try {
-    // Collect and check the entire scope before the first irreversible REST call.
-    const spaces = await readAll("care_spaces", "id,created_by", { created_by: `eq.${session.userId}` });
-    const children = await readAll("children", "id,care_space_id,created_by", { created_by: `eq.${session.userId}` });
-    const spaceIds = new Set(spaces.map((row) => row.id));
-    for (const space of spaces) {
-      if (typeof space.id !== "string" || !uuid.test(space.id) || space.created_by !== session.userId) throw new Error("foreign_scope");
-      const members = await readAll("care_space_members", "user_id", { care_space_id: `eq.${space.id}` });
-      // Membership rows can be absent on a space created by this guardian.
-      // Do not require a self-membership merely to clean up an owned space.
-      // Server authorization still governs every read and filtered DELETE.
-      if (members.some((member) => member.user_id !== session.userId)) throw new Error("shared_scope");
-      const allChildren = await readAll("children", "id,created_by", { care_space_id: `eq.${space.id}` });
-      if (allChildren.some((child) => child.created_by !== session.userId || !children.some((owned) => owned.id === child.id))) throw new Error("foreign_scope");
-    }
-    for (const child of children) {
-      if (typeof child.id !== "string" || !uuid.test(child.id) || typeof child.care_space_id !== "string" || !spaceIds.has(child.care_space_id) || child.created_by !== session.userId) throw new Error("foreign_scope");
-      const access = await readAll("child_access", "user_id", { child_id: `eq.${child.id}`, care_space_id: `eq.${child.care_space_id}` });
-      if (access.some((row) => row.user_id !== session.userId)) throw new Error("shared_scope");
-      const holds = await readAll("clinical_memory_legal_holds", "id", { child_id: `eq.${child.id}`, care_space_id: `eq.${child.care_space_id}` });
-      if (holds.length) throw new Error("retention_hold");
-    }
-
-    // Same avatar namespace used by the native uploader: <guardianId>/<filename>.
-    // List first; never send a bucket-wide prefix or delete storage.objects rows.
-    const avatarPaths: string[] = [];
-    for (let offset = 0; ; offset += 100) {
-      const listed = await scopedRequest("/storage/v1/object/list/avatars", {
-        method: "POST",
-        body: JSON.stringify({ prefix: `${session.userId}/`, limit: 100, offset, sortBy: { column: "name", order: "asc" } }),
-      });
-      const objects = await listed.json();
-      if (!Array.isArray(objects)) throw new Error("invalid_storage_scope");
-      for (const object of objects) {
-        if (!object.id || typeof object.name !== "string" || !object.name || object.name.includes("/") || object.name === "." || object.name === "..") throw new Error("invalid_storage_scope");
-        avatarPaths.push(`${session.userId}/${object.name}`);
-      }
-      if (objects.length < 100) break;
-      if (avatarPaths.length >= 10_000) throw new Error("scope_too_large");
-    }
-
-    for (const [index, child] of children.entries()) {
-      const filters = { child_id: `eq.${child.id}`, care_space_id: `eq.${child.care_space_id}` };
-      // Port of the mobile direct cleanup, using current actor column names.
-      // Archival has a separate result; it must never be described as deletion.
-      try {
-        for (const table of [
-          "messages", "tool_executions", "safety_evaluations",
-          "clinical_memory_embeddings", "clinical_memory_items", "conversation_summaries",
-          "agent_sessions", "anthropometric_measurements", "development_observations",
-          "vaccine_administrations", "child_food_reactions", "consent_records", "documents",
-          "child_access",
-        ]) await removeRows(table, filters);
-        await removeRows("children", { id: `eq.${child.id}`, care_space_id: `eq.${child.care_space_id}`, created_by: `eq.${session.userId}` }, child.id as string);
-      } catch (cause) {
-        if (!(cause instanceof ArchivableCleanupError)) throw cause;
-        let archivedProfiles = 0;
-        // Stop destructive cleanup. Archive only the still-pending verified scope.
-        for (const pending of children.slice(index)) {
-          const query = new URLSearchParams({ select: "id,status", id: `eq.${pending.id}`, care_space_id: `eq.${pending.care_space_id}`, created_by: `eq.${session.userId}` });
-          writesStarted = true;
-          const response = await scopedRequest(`/rest/v1/children?${query}`, {
-            method: "PATCH",
-            headers: { Prefer: "return=representation" },
-            body: JSON.stringify({ status: "archived" }),
-          });
-          const archived = await response.json();
-          if (!Array.isArray(archived) || archived.length !== 1 || archived[0].id !== pending.id || archived[0].status !== "archived") throw new Error("unconfirmed_archive");
-          archivedProfiles++;
-        }
-        // Keep Auth, memberships, profile and retained files. No final delete RPC.
-        return { status: "archived", archivedProfiles };
-      }
-    }
-    // Do this before removing memberships/profile, while Storage authorization exists.
-    for (let index = 0; index < avatarPaths.length; index += 100) {
-      writesStarted = true;
-      const response = await scopedRequest("/storage/v1/object/avatars", {
-        method: "DELETE", body: JSON.stringify({ prefixes: avatarPaths.slice(index, index + 100) }),
-      });
-      const removed = await response.json();
-      const expected = avatarPaths.slice(index, index + 100);
-      if (!Array.isArray(removed) || !expected.every((path) => removed.some((object) => object.name === path))) throw new Error("unconfirmed_storage_delete");
-    }
-    await removeRows("messages", { actor_user_id: `eq.${session.userId}` });
-    await removeRows("care_space_members", { user_id: `eq.${session.userId}` });
-    for (const space of spaces) await removeRows("care_spaces", { id: `eq.${space.id}`, created_by: `eq.${session.userId}` }, space.id as string);
-    await removeRows("guardian_profiles", { user_id: `eq.${session.userId}` });
-    await removeRows("audit_events", { actor_user_id: `eq.${session.userId}` });
-    return { status: "cleaned" };
-  } catch {
-    throw new AccountDeletionError(writesStarted
-      ? "La eliminación quedó incompleta: algunos registros pueden haberse eliminado o archivado, pero no se confirmó la eliminación de tu cuenta. Contacta a soporte antes de reintentar."
-      : "No pudimos comprobar que la limpieza directa afecte solo a tu cuenta. No se inició esa limpieza. Contacta a soporte.");
-  }
+  return { status: "queued", requestId: receipt.requestId };
 }
 
 export async function endDeletionSession(
@@ -432,6 +265,7 @@ export async function endDeletionSession(
   session: DeletionSession,
   fetcher: Fetcher = fetch,
 ): Promise<void> {
+  deletionAttempts.delete(session);
   try {
     // Do not log out other devices when the user only cancels the web flow.
     await request(fetcher, `${config.url}/auth/v1/logout?scope=local`, {

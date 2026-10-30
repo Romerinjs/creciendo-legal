@@ -729,8 +729,10 @@ export default function HomePage() {
                 <div className="accordion-body">
                   <p>
                     Sí. Desde los ajustes de tu cuenta puedes solicitar la
-                    eliminación permanente e inmediata de toda tu información y
-                    la de tu familia de nuestras bases de datos.
+                    eliminación permanente de tu cuenta por etapas. Primero se
+                    bloquea el acceso; después se borran tus chats y los datos de
+                    los niños de los que eres el único tutor. Los perfiles
+                    compartidos se conservan para los otros tutores.
                   </p>
                 </div>
               </div>

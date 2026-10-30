@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { AlertTriangle, CheckCircle, LockKeyhole, Trash2 } from "lucide-react";
+import { CheckCircle, LockKeyhole, Trash2 } from "lucide-react";
 import {
   AccountDeletionError,
   clearGoogleDeletionFlow,
@@ -15,8 +15,7 @@ import {
 import type { DeletionSession, PublicSupabaseConfig } from "./account-deletion";
 
 export default function AccountDeletionFlow({ config }: { config: PublicSupabaseConfig | null }) {
-  const [step, setStep] = useState<"public" | "login" | "confirm" | "success" | "archived">("public");
-  const [archivedProfiles, setArchivedProfiles] = useState(0);
+  const [step, setStep] = useState<"public" | "login" | "confirm" | "success">("public");
   const [email, setEmail] = useState("");
   const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -186,25 +185,25 @@ export default function AccountDeletionFlow({ config }: { config: PublicSupabase
     setError("");
     const active = session.current;
     try {
-      const result = await deleteAuthenticatedAccount(config, active, confirmed);
+      await deleteAuthenticatedAccount(config, active, confirmed);
+      if (!mounted.current || session.current !== active) return;
       session.current = null;
       setAccountEmail("");
       setConfirmed(false);
-      if (result.status === "archived") {
-        setArchivedProfiles(result.archivedProfiles);
-        setStep("archived");
-      } else {
-        setStep("success");
-      }
+      setStep("success");
       void endDeletionSession(config, active);
     } catch (cause) {
-      // A timeout can mean the server completed. Never retry the RPC automatically.
-      session.current = null;
-      setAccountEmail("");
-      setConfirmed(false);
-      setStep("login");
-      setError(cause instanceof AccountDeletionError ? cause.message : "No pudimos confirmar el borrado. Contacta a soporte.");
-      void endDeletionSession(config, active);
+      if (!mounted.current || session.current !== active) return;
+      // Keep the verified session and stable key after an ambiguous response.
+      // The user can retry the same request without creating another job.
+      if (cause instanceof AccountDeletionError && cause.requiresSignIn) {
+        session.current = null;
+        setAccountEmail("");
+        setConfirmed(false);
+        setStep("login");
+        void endDeletionSession(config, active);
+      }
+      setError(cause instanceof AccountDeletionError ? cause.message : "No pudimos confirmar la solicitud. Puedes reintentar.");
     } finally {
       locked.current = false;
       setBusy(false);
@@ -246,30 +245,24 @@ export default function AccountDeletionFlow({ config }: { config: PublicSupabase
       </form>}
 
       {step === "confirm" && <form className="account-auth-form" onSubmit={remove}>
-        <h2 ref={title} tabIndex={-1}>¿Eliminar tu cuenta definitivamente?</h2>
-        <p>Has iniciado sesión como <strong className="account-email">{accountEmail}</strong>. Se eliminarán tu cuenta y los datos asociados, incluidos los documentos y las fotos. Esta acción no se puede deshacer.</p>
-        <p>El borrado puede realizarse en varias etapas. Si alguna falla, los registros ya eliminados no podrán recuperarse y te indicaremos que el proceso quedó incompleto.</p>
-        <p>Si el historial de crecimiento o las dependencias del chat impiden completar el borrado, archivaremos los perfiles pendientes, como en la app. En ese caso la cuenta y los datos conservados seguirán existiendo: archivar no equivale a eliminar.</p>
+        <h2 ref={title} tabIndex={-1}>¿Seguro que quieres eliminar tu cuenta?</h2>
+        <p>Has iniciado sesión como <strong className="account-email">{accountEmail}</strong>.</p>
+        <p>Al confirmar, se bloqueará tu acceso. Después se eliminarán los chats y sus copias internas y, por último, los datos y fotos de los niños de los que eres el único tutor. El proceso se ejecuta por lotes periódicos.</p>
+        <p>Los perfiles compartidos con otro tutor se conservarán para esa persona. Los datos eliminados no podrán recuperarse.</p>
         <label className="account-confirm-check">
           <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} required disabled={busy} />
-          <span>Entiendo que los datos borrados no podrán recuperarse y que, si no se puede completar la eliminación, los perfiles pendientes podrán archivarse.</span>
+          <span>Confirmo que quiero eliminar mi cuenta y entiendo que esta acción es irreversible.</span>
         </label>
         <div className="account-flow-buttons">
-          <button className="btn btn-danger" type="submit" disabled={busy || !confirmed}><Trash2 size={18} aria-hidden="true" />{busy ? "Eliminando…" : "Eliminar definitivamente"}</button>
+          <button className="btn btn-danger" type="submit" disabled={busy || !confirmed}><Trash2 size={18} aria-hidden="true" />{busy ? "Confirmando…" : "Confirmar eliminación"}</button>
           <button className="btn btn-secondary" type="button" disabled={busy} onClick={cancel}>Conservar mi cuenta</button>
         </div>
       </form>}
 
       {step === "success" && <div className="account-auth-form" role="status">
         <span className="essential-icon"><CheckCircle size={22} aria-hidden="true" /></span>
-        <h2 ref={title} tabIndex={-1}>Tu cuenta se eliminó correctamente</h2>
-        <p>La operación de eliminación de tu cuenta y los datos asociados se completó. Tu sesión en esta página se ha cerrado.</p>
-      </div>}
-      {step === "archived" && <div className="account-auth-form" role="status">
-        <span className="essential-icon"><AlertTriangle size={22} aria-hidden="true" /></span>
-        <h2 ref={title} tabIndex={-1}>Perfiles archivados; cuenta no eliminada</h2>
-        <p>Se {archivedProfiles === 1 ? "archivó 1 perfil" : `archivaron ${archivedProfiles} perfiles`}. El servidor impidió completar el borrado. Tu cuenta y los datos conservados siguen existiendo; algunos registros anteriores pueden haberse eliminado.</p>
-        <p>Tu sesión en esta web se ha cerrado. Para completar la eliminación de la cuenta y de los datos conservados, <a className="account-support-link" href="mailto:estebanp192001@gmail.com">contacta a soporte</a>.</p>
+        <h2 ref={title} tabIndex={-1}>Solicitud de eliminación recibida</h2>
+        <p>Tu acceso quedó bloqueado y cerramos la sesión de esta página. El borrado de los chats y los datos continúa por etapas; no necesitas enviar otra solicitud.</p>
       </div>}
       {error && <p className="account-flow-error" role="alert">{error}</p>}
     </div>
