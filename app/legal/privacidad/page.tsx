@@ -283,9 +283,9 @@ export default function PrivacidadPage() {
                 <div className="legal-content-body">
                   <p>
                     El responsable del tratamiento de los datos personales
-                    recabados a través de la aplicación Creciendo es la sociedad
-                    desarrolladora de la plataforma Creciendo App (en adelante,
-                    &ldquo;Creciendo&rdquo;).
+                    recabados a través de la aplicación Creciendo es 77 Studio
+                    LLC, la entidad que opera y presta el servicio bajo la
+                    marca Creciendo (en adelante, &ldquo;Creciendo&rdquo;).
                   </p>
                   <p>
                     Esta Política de Privacidad describe cómo recopilamos,
